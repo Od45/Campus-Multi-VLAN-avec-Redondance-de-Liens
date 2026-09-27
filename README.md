@@ -24,6 +24,19 @@ Ce projet reproduit l'architecture réseau typique d'une PME répartie sur plusi
 
 ---
 
+## 📥 Tester le projet
+
+Le fichier de simulation Cisco Packet Tracer (`.pkt`) est disponible dans ce dépôt : **[Campus-MultiVLAN.pkt](./Campus-MultiVLAN.pkt)**.
+
+Ouvre-le avec [Cisco Packet Tracer](https://www.netacad.com/courses/packet-tracer) (gratuit, inscription NetAcad requise) pour :
+- explorer l'ensemble des configurations des switches d'accès, du switch de distribution et du routeur,
+- vérifier la table VLAN et les trunks en direct (`show vlan brief`, `show interfaces trunk`),
+- tester toi-même la connectivité inter-VLAN et l'attribution DHCP en rallumant/éteignant des ports.
+
+> ⚠️ Remplace `Campus-MultiVLAN.pkt` par le nom exact de ton fichier une fois ajouté au dépôt.
+
+---
+
 ## 🗺️ Architecture
 
 ![Topologie réseau Packet Tracer](01_topologie_reseau_packet_tracer.png)
@@ -126,6 +139,8 @@ Tests de connectivité croisés confirmant le bon fonctionnement du routage entr
 
 ```
 ├── README.md
+├── LICENSE
+├── Campus-MultiVLAN.pkt                 ← fichier de simulation à ouvrir dans Packet Tracer
 ├── 01_topologie_reseau_packet_tracer.png
 ├── 02_switches_show_vlan_brief.png
 ├── 03_switches_show_interfaces_trunk_vtp.png
@@ -145,6 +160,6 @@ Tests de connectivité croisés confirmant le bon fonctionnement du routage entr
 
 ## 👤 Auteur
 
-*[ALAYE Odilon Alabi]*
+**ALAYE Odilon Alabi**
 
 N'hésite pas à me contacter pour toute question sur ce projet ou pour échanger sur des opportunités en administration réseau / infrastructure.
