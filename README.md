@@ -33,7 +33,6 @@ Ouvre-le avec [Cisco Packet Tracer](https://www.netacad.com/courses/packet-trace
 - vérifier la table VLAN et les trunks en direct (`show vlan brief`, `show interfaces trunk`),
 - tester toi-même la connectivité inter-VLAN et l'attribution DHCP en rallumant/éteignant des ports.
 
-> ⚠️ Remplace `Campus-MultiVLAN.pkt` par le nom exact de ton fichier une fois ajouté au dépôt.
 
 ---
 
