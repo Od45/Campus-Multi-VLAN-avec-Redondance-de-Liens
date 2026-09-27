@@ -2,349 +2,164 @@
 
 **Niveau :** Intermédiaire
 **Outils :** Cisco Packet Tracer
-**Thèmes couverts :** VLAN · Trunking 802.1Q · STP Rapid-PVST+ · EtherChannel (LACP) · DHCP (relay/ip helper) · Routage inter-VLAN (SVI)
+**Thèmes couverts :** VLAN · Trunking 802.1Q · STP Rapid-PVST+ · EtherChannel (LACP) · DHCP (relay) · Routage inter-VLAN (SVI)
 
 ---
 
-## 📋 Contexte
+## 📋 Contexte / Scénario
 
-Une PME répartie sur deux étages doit segmenter son trafic par service (**Direction, Comptabilité, Ventes, Invités/Management**) tout en garantissant une continuité de service en cas de panne d'un lien entre switches. Ce lab met en œuvre une architecture **collapsed-core** avec un switch de distribution niveau 3 (SVI + routage inter-VLAN), deux switches d'accès, et un routeur en amont assurant le relais DHCP et le routage vers l'extérieur via des sous-interfaces 802.1Q.
+Une PME répartie sur deux étages doit segmenter son trafic par service (**Direction, Comptabilité, Ventes, Invités**) tout en garantissant une continuité de service si un lien entre switches tombe en panne.
 
-## 🗺️ Topologie
+## 🎯 Objectifs pédagogiques
 
-![Topologie réseau](01_topologie_reseau_packet_tracer.png)
+- Créer et nommer 3 VLANs (10-Direction, 20-Compta, 99-Invités) sur deux switches d'accès et un switch de distribution L3.
+- Configurer des trunks 802.1Q en n'autorisant que les VLANs nécessaires (VLAN pruning).
+- Regrouper deux liens entre SW-DIST et SW-ACCES1 en EtherChannel LACP (Po1) pour la bande passante et la redondance.
+- Activer Rapid-PVST+ et fixer le switch de distribution comme pont racine (priorité) pour tous les VLANs.
+- Créer les interfaces virtuelles (SVI) sur le switch L3 pour le routage inter-VLAN.
+- Configurer un service DHCP centralisé sur le switch L3 avec `ip helper-address` ou relais si le serveur est distant.
 
-```
-                     ┌────────────┐
-                     │  Router1   │  (Gi0/0 en trunk .10/.20/.30/.99)
-                     └─────┬──────┘
-                            │ Trunk 802.1Q
-                     ┌─────┴──────────┐
-                     │ Multilayer SW0 │  (L3 - SVI + DHCP relay)
-                     │   3650-24PS    │
-                     └───┬────────┬───┘
-             Trunk 802.1Q│        │Trunk 802.1Q
-                ┌────────┘        └────────┐
-           ┌────┴────┐              ┌──────┴───┐
-           │ Switch0 │◄────────────►│ Switch1  │  (lien redondant entre accès)
-           │2960-24TT│  Trunk 802.1Q│2960-24TT │
-           └────┬────┘              └────┬─────┘
-          PC0-PC3 (VLAN 10/20/30/99) PC4-PC7 (VLAN 99/30/20/10)
-```
+## 🗺️ Schéma d'architecture
 
-## 🔢 Plan d'adressage
+![Topologie réseau Packet Tracer](01_topologie_reseau_packet_tracer.png)
 
-| VLAN | Nom          | Réseau            | Passerelle (SVI) | Rôle                  |
-|------|--------------|-------------------|-------------------|-----------------------|
-| 10   | DIRECTION    | 192.168.10.0/27   | 192.168.10.2      | Poste Direction       |
-| 20   | COMPTA       | 192.168.20.0/27   | 192.168.20.2      | Poste Comptabilité    |
-| 30   | VENTES       | 192.168.30.0/27   | 192.168.30.2      | Poste Ventes          |
-| 99   | MANAGEMENT   | 192.168.99.0/28   | 192.168.99.2      | Gestion / Invités     |
-| —    | Backbone L3  | 10.0.0.0/30       | —                 | Liaison Router1 ↔ SW-DIST |
+## 🔢 Plan d'adressage de base
 
-Adressage attribué **dynamiquement par DHCP** aux postes clients (voir capture PC).
+| Segment / rôle       | Réseau            | SVI (passerelle) |
+|-----------------------|-------------------|-------------------|
+| VLAN 10 - Direction    | 192.168.10.0/24   | .1 |
+| VLAN 20 - Comptabilité | 192.168.20.0/24   | .1 |
+| VLAN 99 - Invités      | 192.168.99.0/24   | .1 |
+| VLAN 1 - Management    | 192.168.1.0/24    | .1 |
 
 ---
 
-## 🧭 Cahier des tâches et implémentation
+## 🧭 Cahier des tâches — Preuves en capture
 
-### 1️⃣ Création des VLANs
+### 1️⃣ Créer les VLANs 10, 20, 99 et 1 (management) sur les 3 switches, avec des noms explicites
 
-VLANs créés et nommés sur les 3 switches (`SH VLAN` / `SH VLAN BRIEF`) :
+![Show VLAN brief sur les 3 switches](02_switches_show_vlan_brief.png)
 
-| Fichier | Contenu |
-|---|---|
-| `02_switches_show_vlan_brief.png` | Vérification des VLANs 10/20/30/99 sur Switch0, Multilayer Switch0 et Switch1, avec répartition des ports par VLAN |
+`SH VLAN` exécuté sur **Switch0**, **Multilayer Switch0** et **Switch1** : les VLANs 10 (DIRECTION), 20 (COMPTA), 30 (VENTES) et 99 (MANAGEMENT) apparaissent bien nommés et actifs, avec la répartition des ports par VLAN sur chaque équipement.
 
-### 2️⃣ Trunking 802.1Q & VTP
+![Vérification croisée VTP + VLAN brief](12_switches_vtp_status_and_vlan_brief.png)
 
-Domaine VTP `CISCO` (mode Server sur SW-DIST, Client sur les switches d'accès), trunks configurés en `dot1q`, `native vlan 8`, VLANs autorisés filtrés (pruning) :
-
-| Fichier | Contenu |
-|---|---|
-| `03_switches_show_interfaces_trunk_vtp.png` | `SH INT TRUNK` + `SH VTP STATUS` : encapsulation 802.1Q, native VLAN 8, VLANs autorisés 8,10,20,30,99 |
-| `12_switches_vtp_status_and_vlan_brief.png` | Vérification croisée VTP + VLAN brief sur les 3 équipements |
-
-### 3️⃣ Configuration des ports (access, trunk, port-security)
-
-| Fichier | Contenu |
-|---|---|
-| `06_switches_access_trunk_and_port_security_config.png` | Ports d'accès configurés par VLAN (Fa0/3→VLAN10, Fa0/4→VLAN20, Fa0/5→VLAN30, Fa0/6→VLAN99) avec `switchport port-security mac-address sticky` ; trunks Fa0/1-Fa0/2 en mode trunk natif VLAN 8 |
-
-### 4️⃣ Switch de distribution (L3) — Trunk & routage
-
-| Fichier | Contenu |
-|---|---|
-| `04_multilayer_switch_trunk_and_l3_config.png` | Interfaces Gi1/0/1-2 et Gi1/0/4-8 en trunk `nonegotiate`, VLAN natif 8 ; interface routée Gi1/0/3 en `no switchport` (liaison L3 point-à-point vers Router1, 10.0.0.2/30) ; `spanning-tree mode pvst` |
-
-### 5️⃣ Interfaces virtuelles (SVI) & relais DHCP
-
-| Fichier | Contenu |
-|---|---|
-| `11_multilayer_switch_svi_and_ip_helper_config.png` | SVI VLAN10/20/30/99 avec `mac-address` dédiée, IP de passerelle, et `ip helper-address 10.0.0.1` pour relayer les requêtes DHCP vers le routeur ; `ip classless` |
-
-### 6️⃣ Routeur — Sous-interfaces 802.1Q (Router-on-a-Stick / uplink L3)
-
-| Fichier | Contenu |
-|---|---|
-| `10_router1_subinterfaces_dot1q_config.png` | Sous-interfaces Gi0/0.10/.20/.30/.99 avec `encapsulation dot1Q` + IP par VLAN (rôle de passerelle secondaire / interco) |
-| `07_router1_interfaces_global_config.png` | Interface Gi0/0 configurée en `10.0.0.1/30` (lien routé vers SW-DIST) |
-| `05_router1_static_routes_config.png` | Routes statiques vers les réseaux VLAN 10/20/30/99 via `10.0.0.2` (next-hop = SW-DIST) |
-
-### 7️⃣ Service DHCP centralisé
-
-| Fichier | Contenu |
-|---|---|
-| `08_router1_dhcp_pools_and_excluded_addresses.png` | Pools DHCP `DHCP_10/20/30/99` avec exclusions des adresses réseau/gateway/broadcast, `default-router`, `dns-server`, `domain-name LAB.NET` |
-
-### 8️⃣ Vérification de la connectivité inter-VLAN et DHCP
-
-| Fichier | Contenu |
-|---|---|
-| `09_clients_pc_dhcp_ip_configuration_verification.png` | PC0 à PC7 : adresses IPv4 obtenues automatiquement par DHCP, cohérentes avec leur VLAN d'appartenance |
-| `13_test_ping_inter-vlan_pc_clients.png` | Tests `ping` croisés entre VLANs (10↔20↔30↔99) : succès avec pertes ponctuelles liées à la résolution ARP initiale |
+Second passage de vérification confirmant la cohérence des VLANs sur les trois switches via le domaine VTP `CISCO` (Server sur le switch de distribution, Client sur les switches d'accès).
 
 ---
 
-## 💻 Commandes CLI reconstituées
+### 2️⃣ Configurer les ports d'accès en mode `access` avec le bon VLAN + `spanning-tree portfast` et `bpduguard`
 
-### Switches d'accès (Switch0 / Switch1)
+![Configuration des ports access, trunk et port-security](06_switches_access_trunk_and_port_security_config.png)
 
-```
-enable
-configure terminal
-hostname Switch
+Extrait de configuration : les ports `FastEthernet0/3` à `0/6` sont affectés respectivement aux VLANs 10, 20, 30 et 99 en mode `switchport mode access`, avec `switchport port-security mac-address sticky` activé. Les ports `Fa0/1-Fa0/2` sont en trunk vers le switch de distribution.
 
-vlan 10
- name DIRECTION
-vlan 20
- name COMPTA
-vlan 30
- name VENTES
-vlan 99
- name MANAGEMENT
-exit
+> ℹ️ Le `portfast` et le `bpduguard` ne sont pas visibles dans cette capture — à ajouter/vérifier séparément (voir section Points d'amélioration).
 
-spanning-tree mode pvst
-spanning-tree extend system-id
+---
 
-! Ports d'accès
-interface FastEthernet0/3
- switchport mode access
- switchport access vlan 10
- switchport port-security mac-address sticky
+### 3️⃣ Configurer les deux liens SW-DIST/SW-ACCES1 en Port-Channel LACP actif (mode active), puis en trunk 802.1Q
 
-interface FastEthernet0/4
- switchport mode access
- switchport access vlan 20
- switchport port-security mac-address sticky
+![Trunks et configuration L3 du switch de distribution](04_multilayer_switch_trunk_and_l3_config.png)
 
-interface FastEthernet0/5
- switchport mode access
- switchport access vlan 30
- switchport port-security mac-address sticky
+Sur le switch de distribution, les interfaces `GigabitEthernet1/0/1-2` sont configurées en trunk (`switchport mode trunk`, `switchport nonegotiate`, VLAN natif 8, VLANs autorisés 8,10,20,30,99).
 
-interface FastEthernet0/6
- switchport mode access
- switchport access vlan 99
- switchport port-security mac-address sticky
+> ℹ️ Le regroupement en **EtherChannel LACP (`channel-group ... mode active`)** n'apparaît pas explicitement dans les captures actuelles de ce lab — ces deux liens sont configurés en trunks individuels. Voir section Points d'amélioration pour la commande à ajouter.
 
-! Liens trunk vers le switch de distribution
-interface range FastEthernet0/1-2
- switchport trunk native vlan 8
- switchport trunk allowed vlan 8,10,20,30,99
- switchport mode trunk
+---
 
-end
-write memory
-```
+### 4️⃣ Configurer le lien SW-DIST/SW-ACCES2 en simple trunk 802.1Q, encapsulation dot1q
 
-### Switch de distribution (Multilayer Switch0 - L3)
+![Show interfaces trunk / VTP sur les 3 switches](03_switches_show_interfaces_trunk_vtp.png)
 
-```
-enable
-configure terminal
-hostname MultilayerSwitch0
+`SH INT TRUNK` confirme l'encapsulation **802.1q** sur les liens `Fa0/1-Fa0/2` (accès) et `Gi1/0/1-Gi1/0/2` (distribution), avec VLAN natif 8 et VLANs autorisés 8,10,20,30,99 cohérents sur toute la chaîne.
 
-ip routing
-spanning-tree mode pvst
+---
 
-vlan 10
- name DIRECTION
-vlan 20
- name COMPTA
-vlan 30
- name VENTES
-vlan 99
- name MANAGEMENT
-exit
+### 5️⃣ Fixer SW-DIST comme root bridge (priorité 4096) pour tous les VLANs et vérifier avec `show spanning-tree`
 
-! Interfaces vers les switches d'accès (trunk)
-interface range GigabitEthernet1/0/1-2
- switchport trunk native vlan 8
- switchport trunk allowed vlan 8,10,20,30,99
- switchport mode trunk
- switchport nonegotiate
+![Configuration trunk et L3 du switch de distribution](04_multilayer_switch_trunk_and_l3_config.png)
 
-interface range GigabitEthernet1/0/4-8
- switchport mode trunk
- switchport nonegotiate
+Le mode `spanning-tree mode pvst` est activé sur le switch de distribution.
 
-! Interface routée vers Router1
-interface GigabitEthernet1/0/3
- no switchport
- ip address 10.0.0.2 255.255.255.252
- duplex auto
- speed auto
+> ℹ️ La commande de priorité root bridge (`spanning-tree vlan 1,10,20,30,99 priority 4096`) et la sortie de `show spanning-tree` ne sont pas présentes dans les captures fournies — à documenter séparément.
 
-! SVI (interfaces virtuelles routées)
-interface Vlan10
- mac-address 0060.5c1e.5a01
- ip address 192.168.10.2 255.255.255.224
- ip helper-address 10.0.0.1
+---
 
-interface Vlan20
- mac-address 0060.5c1e.5a02
- ip address 192.168.20.2 255.255.255.224
- ip helper-address 10.0.0.1
+### 6️⃣ Créer les SVI (VLAN 10, 20, 99, 1) sur SW-DIST et activer le routage IP (`ip routing`)
 
-interface Vlan30
- mac-address 0060.5c1e.5a03
- ip address 192.168.30.2 255.255.255.224
- ip helper-address 10.0.0.1
+![SVI et ip helper-address sur le switch de distribution](11_multilayer_switch_svi_and_ip_helper_config.png)
 
-interface Vlan99
- mac-address 0060.5c1e.5a04
- ip address 192.168.99.2 255.255.255.240
- ip helper-address 10.0.0.1
+Les interfaces virtuelles `Vlan10`, `Vlan20`, `Vlan30` et `Vlan99` sont créées avec une adresse MAC dédiée, une adresse IP de passerelle, et un `ip helper-address 10.0.0.1` pour relayer les requêtes DHCP vers le routeur.
 
-ip classless
-end
-write memory
-```
+**Côté routeur**, les sous-interfaces en Router-on-a-Stick complètent le schéma de routage inter-VLAN :
 
-### Router1
+![Sous-interfaces 802.1Q du routeur](10_router1_subinterfaces_dot1q_config.png)
 
-```
-enable
-configure terminal
-hostname Router
+`GigabitEthernet0/0.10`, `.20`, `.30` et `.99` avec `encapsulation dot1Q` et adresse IP par VLAN.
 
-! Interface routée vers SW-DIST
-interface GigabitEthernet0/0
- ip address 10.0.0.1 255.255.255.252
- duplex auto
- speed auto
+![Interfaces globales du routeur](07_router1_interfaces_global_config.png)
 
-! Sous-interfaces 802.1Q (si Router-on-a-Stick complémentaire)
-interface GigabitEthernet0/0.10
- encapsulation dot1Q 10
- ip address 192.168.10.1 255.255.255.224
+Interface `GigabitEthernet0/0` configurée en lien routé point-à-point (`10.0.0.1/30`) vers le switch de distribution.
 
-interface GigabitEthernet0/0.20
- encapsulation dot1Q 20
- ip address 192.168.20.1 255.255.255.224
+---
 
-interface GigabitEthernet0/0.30
- encapsulation dot1Q 30
- ip address 192.168.30.1 255.255.255.224
+### 7️⃣ Configurer le pool DHCP sur SW-DIST pour chaque VLAN, avec exclusions des adresses de gestion
 
-interface GigabitEthernet0/0.99
- encapsulation dot1Q 99
- ip address 192.168.99.1 255.255.255.240
+![Pools DHCP et adresses exclues sur le routeur](08_router1_dhcp_pools_and_excluded_addresses.png)
 
-! Routes statiques vers les réseaux VLAN via SW-DIST
-ip classless
-ip route 192.168.10.0 255.255.255.224 10.0.0.2
-ip route 192.168.20.0 255.255.255.224 10.0.0.2
-ip route 192.168.30.0 255.255.255.224 10.0.0.2
-ip route 192.168.99.0 255.255.255.240 10.0.0.2
+Quatre pools DHCP (`DHCP_10`, `DHCP_20`, `DHCP_30`, `DHCP_99`) sont configurés avec :
+- Exclusion des adresses réseau, passerelle et DNS de chaque plage,
+- `default-router` pointant vers la SVI correspondante,
+- `dns-server` et `domain-name LAB.NET`.
 
-! Configuration DHCP centralisée
-ip dhcp excluded-address 192.168.10.1 192.168.10.2
-ip dhcp excluded-address 192.168.10.9
-ip dhcp excluded-address 192.168.20.1 192.168.20.2
-ip dhcp excluded-address 192.168.20.9
-ip dhcp excluded-address 192.168.30.1 192.168.30.2
-ip dhcp excluded-address 192.168.30.9
-ip dhcp excluded-address 192.168.99.1 192.168.99.2
-ip dhcp excluded-address 192.168.99.9
+![Routes statiques du routeur](05_router1_static_routes_config.png)
 
-ip dhcp pool DHCP_10
- network 192.168.10.0 255.255.255.224
- default-router 192.168.10.2
- dns-server 192.168.10.9
- domain-name LAB.NET
+Les routes statiques vers les réseaux VLAN (192.168.10.0, .20.0, .30.0, .99.0) passent par `10.0.0.2` (switch de distribution), assurant l'acheminement des retours DHCP relayés.
 
-ip dhcp pool DHCP_20
- network 192.168.20.0 255.255.255.224
- default-router 192.168.20.2
- dns-server 192.168.20.9
- domain-name LAB.NET
+---
 
-ip dhcp pool DHCP_30
- network 192.168.30.0 255.255.255.224
- default-router 192.168.30.2
- dns-server 192.168.30.9
- domain-name LAB.NET
+### 8️⃣ Vérifier la connectivité inter-VLAN et l'obtention d'adresses DHCP sur chaque PC
 
-ip dhcp pool DHCP_99
- network 192.168.99.0 255.255.255.240
- default-router 192.168.99.2
- dns-server 192.168.99.9
- domain-name LAB.NET
+![Vérification IP DHCP sur les PC clients](09_clients_pc_dhcp_ip_configuration_verification.png)
 
-end
-write memory
-```
+Les 8 PC (PC0 à PC7) ont bien obtenu une adresse IPv4 automatiquement via DHCP, cohérente avec leur VLAN d'appartenance (ex : PC0 → 192.168.10.3, PC1 → 192.168.20.3, PC3 → 192.168.99.3, etc.).
 
-### Commandes de vérification
+![Tests ping inter-VLAN entre les PC](13_test_ping_inter-vlan_pc_clients.png)
 
-```
-show vlan brief
-show interfaces trunk
-show vtp status
-show spanning-tree
-show etherchannel summary
-show ip route
-show ip interface brief
-show standby
-show port-security interface <int>
-show running-config
-```
+Tests `ping` croisés entre VLANs différents (10↔20↔30↔99) : la connectivité inter-VLAN fonctionne, avec quelques pertes initiales dues à la résolution ARP (normal au premier échange).
 
 ---
 
 ## ✅ Résultats obtenus
 
-- Les **3 VLANs de service + VLAN management** sont opérationnels et isolés au niveau 2.
-- Les **trunks 802.1Q** filtrent bien les VLANs autorisés (pruning effectif).
-- Le **routage inter-VLAN** via les SVI du switch de distribution fonctionne (pings inter-VLAN réussis).
-- Le **DHCP relayé** (`ip helper-address`) attribue correctement les adresses aux postes clients selon leur VLAN.
-- La **sécurité des ports** (port-security sticky) est activée sur les ports d'accès.
+- Les VLANs de service et le VLAN management sont créés, nommés et isolés au niveau 2.
+- Les trunks 802.1Q filtrent correctement les VLANs autorisés (pruning effectif, VLAN natif dédié).
+- Le routage inter-VLAN via les SVI fonctionne (pings inter-VLAN réussis).
+- Le DHCP relayé (`ip helper-address`) attribue correctement les adresses aux postes clients selon leur VLAN.
+- La sécurité des ports (port-security sticky) est activée sur les ports d'accès.
 
-## 🔧 Points d'amélioration possibles
+## 🔧 Points d'amélioration / éléments non couverts par les captures actuelles
 
-- [ ] Ajouter l'**EtherChannel LACP** (`channel-group mode active`) sur les liens SW-DIST ↔ SW-ACCES1, non visible dans les captures actuelles.
-- [ ] Configurer explicitement **Rapid-PVST+** et fixer la **priorité root bridge (4096)** sur le switch de distribution pour tous les VLANs.
-- [ ] Activer **`spanning-tree portfast` + `bpduguard`** sur les ports utilisateurs.
-- [ ] Sécuriser le VLAN natif (déjà en VLAN 8, dédié — bonne pratique confirmée).
-- [ ] Documenter la table de routage complète (`show ip route`) sur SW-DIST et Router1.
+- [ ] **EtherChannel LACP** : ajouter `channel-group 1 mode active` sur les deux liens SW-DIST ↔ SW-ACCES1 avant de les mettre en trunk.
+- [ ] **Root bridge STP** : configurer `spanning-tree vlan 1,10,20,30,99 priority 4096` sur SW-DIST et fournir la sortie `show spanning-tree` pour vérification.
+- [ ] **Portfast / BPDU Guard** : ajouter `spanning-tree portfast` et `spanning-tree bpduguard enable` sur les ports d'accès utilisateurs.
+- [ ] Fournir une capture de `show etherchannel summary` et `show spanning-tree vlan <id>` une fois ces points implémentés.
 
-## 📂 Structure des captures
+## 📂 Index des captures
 
-```
-01_topologie_reseau_packet_tracer.png
-02_switches_show_vlan_brief.png
-03_switches_show_interfaces_trunk_vtp.png
-04_multilayer_switch_trunk_and_l3_config.png
-05_router1_static_routes_config.png
-06_switches_access_trunk_and_port_security_config.png
-07_router1_interfaces_global_config.png
-08_router1_dhcp_pools_and_excluded_addresses.png
-09_clients_pc_dhcp_ip_configuration_verification.png
-10_router1_subinterfaces_dot1q_config.png
-11_multilayer_switch_svi_and_ip_helper_config.png
-12_switches_vtp_status_and_vlan_brief.png
-13_test_ping_inter-vlan_pc_clients.png
-```
+| # | Fichier | Tâche associée |
+|---|---|---|
+| 1 | `01_topologie_reseau_packet_tracer.png` | Schéma d'architecture |
+| 2 | `02_switches_show_vlan_brief.png` | Tâche 1 — Création des VLANs |
+| 3 | `03_switches_show_interfaces_trunk_vtp.png` | Tâche 4 — Trunk 802.1Q |
+| 4 | `04_multilayer_switch_trunk_and_l3_config.png` | Tâches 3 & 5 — Trunk LACP / STP root |
+| 5 | `05_router1_static_routes_config.png` | Tâche 7 — Routes vers pools DHCP |
+| 6 | `06_switches_access_trunk_and_port_security_config.png` | Tâche 2 — Ports d'accès |
+| 7 | `07_router1_interfaces_global_config.png` | Tâche 6 — Lien routé vers SW-DIST |
+| 8 | `08_router1_dhcp_pools_and_excluded_addresses.png` | Tâche 7 — Pools DHCP |
+| 9 | `09_clients_pc_dhcp_ip_configuration_verification.png` | Tâche 8 — Vérification DHCP |
+| 10 | `10_router1_subinterfaces_dot1q_config.png` | Tâche 6 — SVI / sous-interfaces |
+| 11 | `11_multilayer_switch_svi_and_ip_helper_config.png` | Tâche 6 — SVI + ip helper-address |
+| 12 | `12_switches_vtp_status_and_vlan_brief.png` | Tâche 1 — Vérification VTP/VLAN |
+| 13 | `13_test_ping_inter-vlan_pc_clients.png` | Tâche 8 — Ping inter-VLAN |
